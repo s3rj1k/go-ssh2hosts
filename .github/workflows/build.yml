@@ -1,0 +1,79 @@
+name: Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}_${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    outputs:
+      build_tag: ${{ env.BUILD_TAG }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate build tag
+        id: gentag
+        run: |
+          DATE=$(date +'%y%m%d')
+          BUILD_NUMBER=${{ github.run_number }}
+          TAG="${DATE}-${BUILD_NUMBER}"
+          echo "BUILD_TAG=${TAG}" >> $GITHUB_ENV
+
+          git tag $TAG
+          git push origin $TAG
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+
+      - name: Build
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p build && go build -v -ldflags="-s -w" -o build/ssh2hosts-${{ matrix.arch }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh2hosts-${{ matrix.arch }}-${{ env.BUILD_TAG }}
+          path: build/ssh2hosts-${{ matrix.arch }}
+          retention-days: 5
+
+  release:
+    needs: build
+    name: Release ${{ needs.build.outputs.build_tag }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create SHA256 checksums
+        run: |
+          cd artifacts
+          for file in */*; do
+            sha256sum "$file" >> SHA256SUMS
+          done
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.build_tag }}
+          name: Release ${{ needs.build.outputs.build_tag }}
+          files: |
+            artifacts/*-amd64-*/*
+            artifacts/*-arm64-*/*
+            artifacts/SHA256SUMS
+          draft: false
+          prerelease: true
+          generate_release_notes: false
